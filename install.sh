@@ -676,12 +676,21 @@ show_summary() {
 # Hauptprogramm
 #===============================================================================
 main() {
-    # Interaktiv wenn: kein Argument UND TTY vorhanden
-    if [[ $# -eq 0 ]] && [[ -t 0 ]]; then
+    # curl|bash-Fallstrick: stdin ist die PIPE (vom curl), kein Terminal!
+    # Fuer den interaktiven Modus stdin vom Terminal (/dev/tty) umleiten.
+    if [[ $# -eq 0 ]] && [[ ! -t 0 ]]; then
+        if [[ -r /dev/tty ]]; then
+            exec 0</dev/tty
+            log "curl|bash erkannt - Interaktion ueber Terminal."
+        else
+            die "Kein TTY verfuegbar. Nutze: curl ... | bash -s -- --profile=<name>"
+        fi
+    fi
+
+    # Interaktiv wenn: kein Argument (und jetzt TTY)
+    if [[ $# -eq 0 ]]; then
         select_profiles
         select_interfaces
-    elif [[ $# -eq 0 ]]; then
-        die "Kein Argument und keine TTY - nutze: $0 --profile=<firewall|sensor|siem|edr|monitor|full>"
     else
         # CLI-Argumente
         while [[ $# -gt 0 ]]; do
