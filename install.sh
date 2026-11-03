@@ -18,7 +18,7 @@
 #===============================================================================
 set -euo pipefail
 
-B3N_VERSION="2.0.0"
+B3N_VERSION="2.1.0"
 C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[1;33m'
 C_BLUE='\033[0;34m'; C_CYAN='\033[0;36m'; C_OFF='\033[0m'
 
@@ -43,12 +43,146 @@ else
 fi
 
 #===============================================================================
-# Konfiguration (per ENV oder interaktiv ueberschreibbar)
+# Konfiguration
 #===============================================================================
-PROFILE=""
+SELECTED=()          # gewaehlte Komponenten (Array, Mehrfachauswahl!)
 IFACE_WAN=""
 IFACE_LAN=""
 INSTALL_SECURITY_TOOLS="yes"
+
+#===============================================================================
+# whiptail verfuegbar? (TUI-Menue) - ggf. nachinstallieren
+#===============================================================================
+ensure_whiptail() {
+    if command -v whiptail >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ -t 0 ]]; then
+        log "Installiere whiptail (TUI-Menue)..."
+        $SUDO apt-get install -y -qq whiptail >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+#===============================================================================
+# Komponenten-Auswahl (TUI-Checklist: Leertaste = markieren!)
+#===============================================================================
+select_profiles() {
+    if ensure_whiptail && [[ -t 0 ]]; then
+        local result
+        result=$(whiptail --title "b3nsecu Security Installer v${B3N_VERSION}" \
+            --checklist \
+"Komponenten waehlen:\n\n  [Leertaste] = markieren\n  [Enter] = bestaetigen\n\nMehrfachauswahl moeglich!" \
+            22 78 10 \
+            "firewall" "NGFW: nftables + Suricata IPS + Zeek (Gateway)" OFF \
+            "sensor"   "IDS-Sensor: Suricata + Zeek (SPAN-Port)" OFF \
+            "siem"     "SIEM: Elasticsearch + Logstash + Kibana" OFF \
+            "edr"      "EDR: Wazuh Manager (FIM-Realtime)" OFF \
+            "monitor"  "Monitoring: Prometheus + Grafana" OFF \
+            3>&1 1>&2 2>&3) || die "Abgebrochen."
+
+        # whiptail liefert: "firewall" "siem" (mit Quotes) -> Array parsen
+        mapfile -t SELECTED < <(echo "$result" | tr -d '"' | tr ' ' '\n' | grep -v '^$')
+
+        [[ ${#SELECTED[@]} -gt 0 ]] || die "Keine Komponente gewaehlt!"
+
+        # Security-Tools-Frage
+        if whiptail --title "Security-Tools" --yesno \
+            "Zusaetzliche Security-Tools installieren?\n\n- fail2ban (SSH-Schutz vorkonfiguriert)\n- ClamAV (Virenscanner)\n- YARA (Rule-Engine)\n- Lynis + rkhunter (Audit)" \
+            14 60; then
+            INSTALL_SECURITY_TOOLS="yes"
+        else
+            INSTALL_SECURITY_TOOLS="no"
+        fi
+    else
+        # Text-Fallback (kein whiptail / kein TTY)
+        echo ""
+        echo "Verfuegbare Komponenten (Nummern durch Leerzeichen getrennt):"
+        echo "  1) firewall   - NGFW: nftables + Suricata IPS + Zeek"
+        echo "  2) sensor     - IDS-Sensor (SPAN)"
+        echo "  3) siem       - Elasticsearch + Logstash + Kibana"
+        echo "  4) edr        - Wazuh Manager"
+        echo "  5) monitor    - Prometheus + Grafana"
+        read -rp "Auswahl [z.B. 1 3 5]: " choice
+        for n in $choice; do
+            case "$n" in
+                1) SELECTED+=("firewall") ;;
+                2) SELECTED+=("sensor") ;;
+                3) SELECTED+=("siem") ;;
+                4) SELECTED+=("edr") ;;
+                5) SELECTED+=("monitor") ;;
+                *) die "Ungueltige Nummer: $n" ;;
+            esac
+        done
+        [[ ${#SELECTED[@]} -gt 0 ]] || die "Keine Komponente gewaehlt!"
+        read -rp "Security-Tools installieren? [J/n]: " s
+        [[ "${s,,}" == "n" ]] && INSTALL_SECURITY_TOOLS="no"
+    fi
+
+    log "Gewaehlt: ${SELECTED[*]}"
+}
+
+#===============================================================================
+# Interface-Auswahl (nur bei firewall/sensor)
+#===============================================================================
+select_interfaces() {
+    # Nur noetig wenn firewall oder sensor gewaehlt
+    local needs_iface="no"
+    for t in "${SELECTED[@]}"; do
+        [[ "$t" == "firewall" || "$t" == "sensor" ]] && needs_iface="yes"
+    done
+    [[ "$needs_iface" == "yes" ]] || return 0
+
+    mapfile -t IFACES < <(ip -o link show | awk -F': ' '{print $2}' | grep -vE "^(lo|docker0|veth|br-)" | sort)
+    [[ ${#IFACES[@]} -gt 0 ]] || die "Keine Netzwerk-Interfaces gefunden!"
+
+    # Das Interface mit der Default-Route ist der wahrscheinlichste Uplink
+    local default_iface
+    default_iface="$(detect_primary_iface)"
+    [[ -n "$default_iface" ]] && log "Default-Route erkannt: $default_iface (als WAN vorausgewaehlt)"
+
+    # whiptail-Liste mit IP-Anzeige bauen
+    local entries=()
+    for iface in "${IFACES[@]}"; do
+        local ip_addr state="OFF"
+        [[ "$iface" == "$default_iface" ]] && state="ON"
+        ip_addr="$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' || echo "keine IP")"
+        entries+=("$iface" "$ip_addr" "$state")
+    done
+
+    if ensure_whiptail && [[ -t 0 ]]; then
+        # WAN (Radiolist - nur eine Auswahl)
+        local wan_result
+        wan_result=$(whiptail --title "WAN-Interface" --radiolist \
+            "WAN-Interface (Uplink) waehlen:" 15 60 "${#IFACES[@]}" \
+            "${entries[@]/OFF/ON}" 3>&1 1>&2 2>&3) || die "Abgebrochen."
+        IFACE_WAN="$(echo "$wan_result" | tr -d '"')"
+
+        # LAN (Menu)
+        local lan_result
+        lan_result=$(whiptail --title "LAN-Interface" --menu \
+            "LAN-Interface (internes Netz) waehlen:" 15 60 "${#IFACES[@]}" \
+            "${entries[@]}" 3>&1 1>&2 2>&3) || die "Abgebrochen."
+        IFACE_LAN="$(echo "$lan_result" | tr -d '"')"
+    else
+        # Text-Fallback
+        echo ""
+        echo "Verfuegbare Interfaces:"
+        local i=1
+        for iface in "${IFACES[@]}"; do
+            local ip_addr
+            ip_addr="$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' || echo "keine IP")"
+            echo "  [$i] $iface ($ip_addr)"
+            ((i++))
+        done
+        read -rp "WAN [1]: " w; w="${w:-1}"
+        IFACE_WAN="${IFACES[$((w-1))]}"
+        read -rp "LAN [1]: " l; l="${l:-1}"
+        IFACE_LAN="${IFACES[$((l-1))]}"
+    fi
+
+    ok "WAN: $IFACE_WAN | LAN: $IFACE_LAN"
+}
 
 #===============================================================================
 # System-Erkennung
@@ -61,91 +195,13 @@ check_system() {
     ver="$(cat /etc/debian_version)"
     log "System: Debian $(lsb_release -ds 2>/dev/null || echo "$ver")"
 
-    # Architektur
     local arch
     arch="$(dpkg --print-architecture)"
     log "Architektur: ${arch}"
 }
 
-detect_interfaces() {
-    log "Erkenne Netzwerk-Interfaces..."
-    mapfile -t IFACES < <(ip -o link show | awk -F': ' '{print $2}' | grep -vE "^(lo|docker0|veth|br-)" | sort)
-
-    if [[ ${#IFACES[@]} -eq 0 ]]; then
-        die "Keine Netzwerk-Interfaces gefunden!"
-    fi
-
-    echo ""
-    echo -e "${C_CYAN}Verfuegbare Interfaces:${C_OFF}"
-    local i=1
-    for iface in "${IFACES[@]}"; do
-        local ip_addr
-        ip_addr="$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' || echo "keine IP")"
-        echo "  [$i] $iface  ($ip_addr)"
-        ((i++))
-    done
-    echo ""
-}
-
-choose_interfaces() {
-    detect_interfaces
-
-    if [[ ${#IFACES[@]} -eq 1 ]]; then
-        IFACE_WAN="${IFACES[0]}"
-        warn "Nur ein Interface gefunden: $IFACE_WAN (WAN = LAN = $IFACE_WAN)"
-        IFACE_LAN="$IFACE_WAN"
-        return
-    fi
-
-    local wan_idx lan_idx
-    read -rp "WAN-Interface (Uplink) [1]: " wan_idx
-    wan_idx="${wan_idx:-1}"
-    IFACE_WAN="${IFACES[$((wan_idx-1))]}"
-
-    read -rp "LAN-Interface (intern) [2]: " lan_idx
-    lan_idx="${lan_idx:-2}"
-    IFACE_LAN="${IFACES[$((lan_idx-1))]}"
-
-    ok "WAN: $IFACE_WAN | LAN: $IFACE_LAN"
-}
-
-#===============================================================================
-# Interaktives Menue
-#===============================================================================
-show_menu() {
-    echo -e "${C_CYAN}"
-    cat <<'BANNER'
-    ____  _____            __
-   | __ )| ____|          / _|  ___  ___ _ ____   _____ _ __
-   |  _ \|  _|   _____   | |_  / __|/ _ \ '__\ \ / / _ \ '__|
-   | |_) | |___ |_____|  |  _| \__ \  __/ |   \ V /  __/ |
-   |____/|_____|         |_|   |___/\___|_|    \_/ \___|_|
-              Security Appliance Installer
-BANNER
-    echo -e "${C_OFF}"
-    echo "Verfuegbare Profile:"
-    echo "  1) firewall   - NGFW: nftables + Suricata IPS + Zeek (Gateway)"
-    echo "  2) sensor     - IDS-Sensor: Suricata + Zeek (SPAN-Port, kein Routing)"
-    echo "  3) siem       - SIEM: Elasticsearch + Logstash + Kibana"
-    echo "  4) edr        - EDR: Wazuh Manager"
-    echo "  5) monitor    - Monitoring: Prometheus + Grafana"
-    echo "  6) full       - ALLES (All-in-One-Appliance)"
-    echo ""
-    read -rp "Profil waehlen [1-6]: " choice
-
-    case "$choice" in
-        1) PROFILE="firewall" ;;
-        2) PROFILE="sensor" ;;
-        3) PROFILE="siem" ;;
-        4) PROFILE="edr" ;;
-        5) PROFILE="monitor" ;;
-        6) PROFILE="full" ;;
-        *) die "Ungueltige Auswahl: $choice" ;;
-    esac
-
-    echo ""
-    read -rp "Security-Tools (fail2ban, clamav, yara, lynis)? [J/n]: " sectools
-    [[ "${sectools,,}" == "n" ]] && INSTALL_SECURITY_TOOLS="no"
+detect_primary_iface() {
+    ip route show default 2>/dev/null | awk '/default/ {print $5; exit}'
 }
 
 #===============================================================================
@@ -160,8 +216,10 @@ setup_repos() {
     # apt-transport-https ist seit Debian 11 in apt integriert (obsolet, aber harmlos)
     $SUDO apt-get install -y -qq ca-certificates curl gnupg lsb-release apt-transport-https
 
+    has_component() { printf '%s\n' "${SELECTED[@]}" | grep -qx "$1"; }
+
     # Elastic Stack 8.x
-    if [[ "$PROFILE" == "siem" || "$PROFILE" == "full" ]]; then
+    if has_component "siem"; then
         log "Fuege Elastic-Repository hinzu..."
         curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch \
             | $SUDO gpg --batch --yes --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg
@@ -170,7 +228,7 @@ setup_repos() {
     fi
 
     # Wazuh 4.x
-    if [[ "$PROFILE" == "edr" || "$PROFILE" == "full" ]]; then
+    if has_component "edr"; then
         log "Fuege Wazuh-Repository hinzu..."
         curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH \
             | $SUDO gpg --batch --yes --dearmor -o /usr/share/keyrings/wazuh-keyring.gpg
@@ -179,7 +237,7 @@ setup_repos() {
     fi
 
     # Grafana
-    if [[ "$PROFILE" == "monitor" || "$PROFILE" == "full" ]]; then
+    if has_component "monitor"; then
         log "Fuege Grafana-Repository hinzu..."
         $SUDO mkdir -p /etc/apt/keyrings
         curl -fsSL https://apt.grafana.com/gpg.key \
@@ -189,7 +247,7 @@ setup_repos() {
     fi
 
     # Zeek (OBS - nicht in Debian main)
-    if [[ "$PROFILE" == "firewall" || "$PROFILE" == "sensor" || "$PROFILE" == "full" ]]; then
+    if has_component "firewall" || has_component "sensor"; then
         log "Fuege Zeek-OBS-Repository hinzu..."
         curl -fsSL "https://download.opensuse.org/repositories/security:/zeek/Debian_13/Release.key" \
             | $SUDO gpg --batch --yes --dearmor -o /usr/share/keyrings/zeek-obs-keyring.gpg
@@ -581,34 +639,30 @@ show_summary() {
     echo -e "${C_GREEN}  b3nsecu Installation abgeschlossen (v${B3N_VERSION})${C_OFF}"
     echo -e "${C_GREEN}===============================================================${C_OFF}"
     echo ""
-    echo -e "  Profil:  ${C_CYAN}${PROFILE}${C_OFF}"
-    echo -e "  WAN:     ${C_CYAN}${IFACE_WAN}${C_OFF}  |  LAN: ${C_CYAN}${IFACE_LAN}${C_OFF}"
+    echo -e "  Komponenten:  ${C_CYAN}${SELECTED[*]}${C_OFF}"
+    echo -e "  WAN:     ${C_CYAN}${IFACE_WAN:-n/a}${C_OFF}  |  LAN: ${C_CYAN}${IFACE_LAN:-n/a}${C_OFF}"
     echo ""
     echo -e "  Dienste:"
-    case "$PROFILE" in
-        firewall|sensor|full)
-            echo -e "    - nftables   : aktiv (Regelsatz /etc/nftables.conf)"
-            echo -e "    - Suricata   : IPS auf ${IFACE_WAN} (af-packet)"
-            echo -e "    - Zeek       : NTA auf ${IFACE_WAN}"
-            ;;
-    esac
-    case "$PROFILE" in
-        siem|full)
-            echo -e "    - Elasticsearch : http://localhost:9200"
-            echo -e "    - Kibana        : http://localhost:5601"
-            ;;
-    esac
-    case "$PROFILE" in
-        edr|full)
-            echo -e "    - Wazuh      : https://localhost:55000"
-            ;;
-    esac
-    case "$PROFILE" in
-        monitor|full)
-            echo -e "    - Prometheus : http://localhost:9090"
-            echo -e "    - Grafana    : http://localhost:3000 (admin/admin)"
-            ;;
-    esac
+    if printf '%s\n' "${SELECTED[@]}" | grep -qx "firewall"; then
+        echo -e "    - nftables   : aktiv (Regelsatz /etc/nftables.conf)"
+        echo -e "    - Suricata   : IPS auf ${IFACE_WAN} (af-packet)"
+        echo -e "    - Zeek       : NTA auf ${IFACE_WAN}"
+    fi
+    if printf '%s\n' "${SELECTED[@]}" | grep -qx "sensor"; then
+        echo -e "    - Suricata   : IDS auf ${IFACE_WAN} (Sensor-Modus)"
+        echo -e "    - Zeek       : NTA auf ${IFACE_WAN}"
+    fi
+    if printf '%s\n' "${SELECTED[@]}" | grep -qx "siem"; then
+        echo -e "    - Elasticsearch : http://localhost:9200"
+        echo -e "    - Kibana        : http://localhost:5601"
+    fi
+    if printf '%s\n' "${SELECTED[@]}" | grep -qx "edr"; then
+        echo -e "    - Wazuh      : https://localhost:55000"
+    fi
+    if printf '%s\n' "${SELECTED[@]}" | grep -qx "monitor"; then
+        echo -e "    - Prometheus : http://localhost:9090"
+        echo -e "    - Grafana    : http://localhost:3000 (admin/admin)"
+    fi
     echo ""
     echo -e "  ${C_YELLOW}Naechste Schritte:${C_OFF}"
     echo -e "    1. Passwoerter aendern (Grafana: admin/admin, Wazuh-API)!"
@@ -624,54 +678,44 @@ show_summary() {
 main() {
     # Interaktiv wenn: kein Argument UND TTY vorhanden
     if [[ $# -eq 0 ]] && [[ -t 0 ]]; then
-        show_menu
-        choose_interfaces
+        select_profiles
+        select_interfaces
     elif [[ $# -eq 0 ]]; then
-        die "Kein Profil angegeben und keine TTY - nutze: $0 --profile=<firewall|sensor|siem|edr|monitor|full>"
+        die "Kein Argument und keine TTY - nutze: $0 --profile=<firewall|sensor|siem|edr|monitor|full>"
     else
         # CLI-Argumente
         while [[ $# -gt 0 ]]; do
             case "$1" in
-                --profile=*)    PROFILE="${1#*=}" ;;
+                --profile=*)    SELECTED+=("${1#*=}") ;;
                 --iface-wan=*)  IFACE_WAN="${1#*=}" ;;
                 --iface-lan=*)  IFACE_LAN="${1#*=}" ;;
                 --no-security)  INSTALL_SECURITY_TOOLS="no" ;;
                 --help|-h)
-                    sed -n '2,20p' "$0" 2>/dev/null || grep -E "^#" "$0" | head -20
+                    grep -E "^#" "$0" | head -22 | sed 's/^#//;s/^ //'
                     exit 0 ;;
                 *) die "Unbekanntes Argument: $1" ;;
             esac
             shift
         done
-        [[ -n "$PROFILE" ]] || die "Kein Profil angegeben."
-        # Interfaces nur bei firewall/sensor/full noetig
-        [[ "$PROFILE" == "firewall" || "$PROFILE" == "sensor" || "$PROFILE" == "full" ]] && {
-            [[ -n "$IFACE_WAN" ]] || choose_interfaces
-        }
+        [[ ${#SELECTED[@]} -gt 0 ]] || die "Kein Profil angegeben."
     fi
-
-    [[ -n "$PROFILE" ]] || die "Kein Profil angegeben."
 
     check_system
     setup_repos
     install_base
     [[ "$INSTALL_SECURITY_TOOLS" == "yes" ]] && install_security_tools
 
-    case "$PROFILE" in
-        firewall) task_firewall; task_harden ;;
-        sensor)   task_firewall ;;
-        siem)     task_siem ;;
-        edr)      task_edr ;;
-        monitor)  task_monitor ;;
-        full)
-            task_firewall
-            task_siem
-            task_edr
-            task_monitor
-            task_harden
-            ;;
-        *) die "Unbekanntes Profil: $PROFILE" ;;
-    esac
+    # Alle gewaehlten Komponenten nacheinander installieren
+    for task in "${SELECTED[@]}"; do
+        case "$task" in
+            firewall) task_firewall; task_harden ;;
+            sensor)   task_firewall ;;
+            siem)     task_siem ;;
+            edr)      task_edr ;;
+            monitor)  task_monitor ;;
+            *) die "Unbekannte Komponente: $task" ;;
+        esac
+    done
 
     show_summary
 }
