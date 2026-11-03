@@ -51,73 +51,127 @@ IFACE_LAN=""
 INSTALL_SECURITY_TOOLS="yes"
 
 #===============================================================================
-# whiptail verfuegbar? (TUI-Menue) - ggf. nachinstallieren
+# Pure-Bash-TUI (kein whiptail/newt - funktioniert bei curl|bash zuverlaessig)
 #===============================================================================
-ensure_whiptail() {
-    if command -v whiptail >/dev/null 2>&1; then
-        return 0
-    fi
-    if [[ -t 0 ]]; then
-        log "Installiere whiptail (TUI-Menue)..."
-        $SUDO apt-get install -y -qq whiptail >/dev/null 2>&1 && return 0
-    fi
-    return 1
+tui_checklist() {
+    # $1=Titel, Rest: "tag" "beschreibung" Paare
+    local title="$1"; shift
+    local -a tags=() descs=()
+    while [[ $# -gt 1 ]]; do
+        tags+=("$1"); descs+=("$2"); shift 2
+    done
+
+    local -a checked
+    for _ in "${tags[@]}"; do checked+=(0); done
+    local cursor=0
+    local n=${#tags[@]}
+
+    # ALLE TUI-Zeichnungen auf STDERR (Ergebnis bleibt auf stdout sauber!)
+    printf '\033[?25l' >&2
+    while true; do
+        printf '\033[%dA' "$((n+3))" 2>/dev/null >&2 || true
+        printf '\r\033[K%b\033[0m\n' "$title" >&2
+        printf '\r\033[K' >&2
+        local i=0
+        for tag in "${tags[@]}"; do
+            local mark="[ ]" color="$C_OFF"
+            [[ ${checked[$i]} -eq 1 ]] && mark="[x]" && color="$C_GREEN"
+            local arrow="  "
+            [[ $i -eq $cursor ]] && arrow="> " && color="$C_CYAN"
+            printf '\r\033[K%b%b %s %s - %s\033[0m\n' "$arrow" "$color" "$mark" "$tag" "${descs[$i]}" >&2
+            ((i++))
+        done
+        printf '\r\033[K%b\n' "  Leertaste=markieren  Pfeile=navigieren  Enter=fertig" >&2
+
+        # Taste lesen
+        local key
+        IFS= read -rsn1 key
+        case "$key" in
+            $'\x1b')
+                local rest=""
+                IFS= read -rsn2 -t 0.05 rest || true
+                case "$rest" in
+                    '[A') ((cursor > 0)) && ((cursor--)) ;;
+                    '[B') ((cursor < n-1)) && ((cursor++)) ;;
+                esac ;;
+            ' ')  ((checked[cursor] ^= 1)) ;;
+            ''|$'\r'|$'\n')   break ;;
+        esac
+    done
+    printf '\033[?25h' >&2
+
+    # Ergebnis: gewaehlte Tags zurueckgeben (STDOUT - sauber von TUI getrennt!)
+    local out=()
+    local j=0
+    for tag in "${tags[@]}"; do
+        [[ ${checked[$j]} -eq 1 ]] && out+=("$tag")
+        ((j++))
+    done
+    printf '%s\n' "${out[@]}"
+}
+
+tui_menu() {
+    # Einfach-Auswahl: $1=Titel, Rest: "tag" "beschreibung" Paare
+    local title="$1"; shift
+    local -a tags=() descs=()
+    while [[ $# -gt 1 ]]; do
+        tags+=("$1"); descs+=("$2"); shift 2
+    done
+    local cursor=0
+    local n=${#tags[@]}
+
+    printf '\033[?25l' >&2
+    while true; do
+        printf '\033[%dA' "$((n+2))" 2>/dev/null >&2 || true
+        printf '\r\033[K%b\033[0m\n' "$title" >&2
+        printf '\r\033[K' >&2
+        local i=0
+        for tag in "${tags[@]}"; do
+            local arrow="  " color="$C_OFF"
+            [[ $i -eq $cursor ]] && arrow="> " && color="$C_CYAN"
+            printf '\r\033[K%b%b %s - %s\033[0m\n' "$arrow" "$color" "$tag" "${descs[$i]}" >&2
+            ((i++))
+        done
+        printf '\r\033[K%b\n' "  Pfeile=navigieren  Enter=waehlen" >&2
+
+        local key
+        IFS= read -rsn1 key
+        case "$key" in
+            $'\x1b')
+                local rest=""
+                IFS= read -rsn2 -t 0.05 rest || true
+                case "$rest" in
+                    '[A') ((cursor > 0)) && ((cursor--)) ;;
+                    '[B') ((cursor < n-1)) && ((cursor++)) ;;
+                esac ;;
+            ''|$'\r'|$'\n')   break ;;
+        esac
+    done
+    printf '\033[?25h' >&2
+    printf '%s\n' "${tags[$cursor]}"
 }
 
 #===============================================================================
-# Komponenten-Auswahl (TUI-Checklist: Leertaste = markieren!)
+# Komponenten-Auswahl (Leertaste = markieren, Mehrfachauswahl)
 #===============================================================================
 select_profiles() {
-    if ensure_whiptail && [[ -t 0 ]]; then
-        local result
-        result=$(whiptail --title "b3nsecu Security Installer v${B3N_VERSION}" \
-            --checklist \
-"Komponenten waehlen:\n\n  [Leertaste] = markieren\n  [Enter] = bestaetigen\n\nMehrfachauswahl moeglich!" \
-            22 78 10 \
-            "firewall" "NGFW: nftables + Suricata IPS + Zeek (Gateway)" OFF \
-            "sensor"   "IDS-Sensor: Suricata + Zeek (SPAN-Port)" OFF \
-            "siem"     "SIEM: Elasticsearch + Logstash + Kibana" OFF \
-            "edr"      "EDR: Wazuh Manager (FIM-Realtime)" OFF \
-            "monitor"  "Monitoring: Prometheus + Grafana" OFF \
-            3>&1 1>&2 2>&3) || die "Abgebrochen."
+    echo ""
+    local -a selection
+    mapfile -t selection < <(tui_checklist \
+        "b3nsecu Security Installer v${B3N_VERSION} - Komponenten waehlen:" \
+        "firewall" "NGFW: nftables + Suricata IPS + Zeek (Gateway)" \
+        "sensor"   "IDS-Sensor: Suricata + Zeek (SPAN-Port)" \
+        "siem"     "SIEM: Elasticsearch + Logstash + Kibana" \
+        "edr"      "EDR: Wazuh Manager (FIM-Realtime)" \
+        "monitor"  "Monitoring: Prometheus + Grafana")
 
-        # whiptail liefert: "firewall" "siem" (mit Quotes) -> Array parsen
-        mapfile -t SELECTED < <(echo "$result" | tr -d '"' | tr ' ' '\n' | grep -v '^$')
+    [[ ${#selection[@]} -gt 0 ]] || die "Keine Komponente gewaehlt!"
+    SELECTED=("${selection[@]}")
 
-        [[ ${#SELECTED[@]} -gt 0 ]] || die "Keine Komponente gewaehlt!"
-
-        # Security-Tools-Frage
-        if whiptail --title "Security-Tools" --yesno \
-            "Zusaetzliche Security-Tools installieren?\n\n- fail2ban (SSH-Schutz vorkonfiguriert)\n- ClamAV (Virenscanner)\n- YARA (Rule-Engine)\n- Lynis + rkhunter (Audit)" \
-            14 60; then
-            INSTALL_SECURITY_TOOLS="yes"
-        else
-            INSTALL_SECURITY_TOOLS="no"
-        fi
-    else
-        # Text-Fallback (kein whiptail / kein TTY)
-        echo ""
-        echo "Verfuegbare Komponenten (Nummern durch Leerzeichen getrennt):"
-        echo "  1) firewall   - NGFW: nftables + Suricata IPS + Zeek"
-        echo "  2) sensor     - IDS-Sensor (SPAN)"
-        echo "  3) siem       - Elasticsearch + Logstash + Kibana"
-        echo "  4) edr        - Wazuh Manager"
-        echo "  5) monitor    - Prometheus + Grafana"
-        read -rp "Auswahl [z.B. 1 3 5]: " choice
-        for n in $choice; do
-            case "$n" in
-                1) SELECTED+=("firewall") ;;
-                2) SELECTED+=("sensor") ;;
-                3) SELECTED+=("siem") ;;
-                4) SELECTED+=("edr") ;;
-                5) SELECTED+=("monitor") ;;
-                *) die "Ungueltige Nummer: $n" ;;
-            esac
-        done
-        [[ ${#SELECTED[@]} -gt 0 ]] || die "Keine Komponente gewaehlt!"
-        read -rp "Security-Tools installieren? [J/n]: " s
-        [[ "${s,,}" == "n" ]] && INSTALL_SECURITY_TOOLS="no"
-    fi
+    # Security-Tools-Frage
+    echo ""
+    read -rp "Security-Tools installieren (fail2ban, ClamAV, YARA, Lynis)? [J/n]: " s
+    [[ "${s,,}" == "n" ]] && INSTALL_SECURITY_TOOLS="no"
 
     log "Gewaehlt: ${SELECTED[*]}"
 }
@@ -126,7 +180,6 @@ select_profiles() {
 # Interface-Auswahl (nur bei firewall/sensor)
 #===============================================================================
 select_interfaces() {
-    # Nur noetig wenn firewall oder sensor gewaehlt
     local needs_iface="no"
     for t in "${SELECTED[@]}"; do
         [[ "$t" == "firewall" || "$t" == "sensor" ]] && needs_iface="yes"
@@ -136,50 +189,32 @@ select_interfaces() {
     mapfile -t IFACES < <(ip -o link show | awk -F': ' '{print $2}' | grep -vE "^(lo|docker0|veth|br-)" | sort)
     [[ ${#IFACES[@]} -gt 0 ]] || die "Keine Netzwerk-Interfaces gefunden!"
 
-    # Das Interface mit der Default-Route ist der wahrscheinlichste Uplink
+    # Nur 1 Interface: automatisch WAN+LAN
+    if [[ ${#IFACES[@]} -eq 1 ]]; then
+        IFACE_WAN="${IFACES[0]}"
+        IFACE_LAN="${IFACES[0]}"
+        warn "Nur ein Interface: $IFACE_WAN (WAN = LAN)"
+        return 0
+    fi
+
+    # Default-Route ermitteln (wahrscheinlichster Uplink)
     local default_iface
     default_iface="$(detect_primary_iface)"
-    [[ -n "$default_iface" ]] && log "Default-Route erkannt: $default_iface (als WAN vorausgewaehlt)"
+    [[ -n "$default_iface" ]] && log "Default-Route: $default_iface (WAN-Vorschlag)"
 
-    # whiptail-Liste mit IP-Anzeige bauen
-    local entries=()
+    # WAN waehlen
+    echo ""
+    local -a wan_entries=()
     for iface in "${IFACES[@]}"; do
-        local ip_addr state="OFF"
-        [[ "$iface" == "$default_iface" ]] && state="ON"
+        local ip_addr
         ip_addr="$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' || echo "keine IP")"
-        entries+=("$iface" "$ip_addr" "$state")
+        wan_entries+=("$iface" "$ip_addr")
     done
+    IFACE_WAN="$(tui_menu "WAN-Interface (Uplink) waehlen:" "${wan_entries[@]}" | head -1)"
 
-    if ensure_whiptail && [[ -t 0 ]]; then
-        # WAN (Radiolist - nur eine Auswahl)
-        local wan_result
-        wan_result=$(whiptail --title "WAN-Interface" --radiolist \
-            "WAN-Interface (Uplink) waehlen:" 15 60 "${#IFACES[@]}" \
-            "${entries[@]/OFF/ON}" 3>&1 1>&2 2>&3) || die "Abgebrochen."
-        IFACE_WAN="$(echo "$wan_result" | tr -d '"')"
-
-        # LAN (Menu)
-        local lan_result
-        lan_result=$(whiptail --title "LAN-Interface" --menu \
-            "LAN-Interface (internes Netz) waehlen:" 15 60 "${#IFACES[@]}" \
-            "${entries[@]}" 3>&1 1>&2 2>&3) || die "Abgebrochen."
-        IFACE_LAN="$(echo "$lan_result" | tr -d '"')"
-    else
-        # Text-Fallback
-        echo ""
-        echo "Verfuegbare Interfaces:"
-        local i=1
-        for iface in "${IFACES[@]}"; do
-            local ip_addr
-            ip_addr="$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' || echo "keine IP")"
-            echo "  [$i] $iface ($ip_addr)"
-            ((i++))
-        done
-        read -rp "WAN [1]: " w; w="${w:-1}"
-        IFACE_WAN="${IFACES[$((w-1))]}"
-        read -rp "LAN [1]: " l; l="${l:-1}"
-        IFACE_LAN="${IFACES[$((l-1))]}"
-    fi
+    # LAN waehlen
+    echo ""
+    IFACE_LAN="$(tui_menu "LAN-Interface (internes Netz) waehlen:" "${wan_entries[@]}" | head -1)"
 
     ok "WAN: $IFACE_WAN | LAN: $IFACE_LAN"
 }
@@ -729,4 +764,7 @@ main() {
     show_summary
 }
 
-main "$@"
+# main nur bei DIREKTER Ausfuehrung (nicht beim source fuer Tests)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
