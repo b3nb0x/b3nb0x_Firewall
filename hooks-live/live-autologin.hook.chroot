@@ -1,0 +1,39 @@
+#!/bin/bash
+#===============================================================================
+# b3nsecu Live-System: User + Auto-Login korrekt einrichten
+#-------------------------------------------------------------------------------
+# Fix fuer: "Authentication failure" beim Live-System-Boot
+# Ursache: live-boot legt den User an, aber Passwort-Hash und
+#          getty-Autologin sind ohne explizite Konfiguration unzuverlaessig.
+#===============================================================================
+set -e
+
+echo "[b3nsecu] Konfiguriere Live-User + Auto-Login..."
+
+# 1. User 'user' sicherstellen (mit Passwort 'live')
+if ! id user >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G sudo user
+fi
+echo "user:live" | chpasswd
+
+# 2. Root-Passwort setzen (fuer Notfaelle)
+echo "root:b3nsecu" | chpasswd
+
+# 3. Getty-Autologin auf tty1 konfigurieren (systemd-Override)
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin user --noclear %I \$TERM
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+Restart=always
+Type=idle
+EOF
+
+# 4. sudo ohne Passwort fuer den Live-User (Appliance-Standard)
+echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/live-user
+chmod 440 /etc/sudoers.d/live-user
+
+echo "[b3nsecu] Live-User konfiguriert: user/live (root: b3nsecu)"

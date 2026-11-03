@@ -1,0 +1,163 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 3, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "event_type:alert",
+          "refId": "A"
+        }
+      ],
+      "title": "Alerts (24h)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 3, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "event_type:dns",
+          "refId": "A"
+        }
+      ],
+      "title": "DNS-Queries (24h)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 3, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "event_type:tls",
+          "refId": "A"
+        }
+      ],
+      "title": "TLS-Handshakes (24h)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 3, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "event_type:flow",
+          "refId": "A"
+        }
+      ],
+      "title": "Flows (24h)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 3 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "*",
+          "refId": "A"
+        }
+      ],
+      "title": "Alerts über Zeit",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 3 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "*",
+          "refId": "A"
+        }
+      ],
+      "title": "Netzwerk-Protokolle",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "b3nsecu-elk" },
+          "query": "*",
+          "refId": "A"
+        }
+      ],
+      "title": "Top Quellen (Tabelle)",
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["b3nsecu", "suricata"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "b3nsecu – Suricata Overview",
+  "uid": "b3nsecu-suricata",
+  "version": 1,
+  "weekStart": ""
+}

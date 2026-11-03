@@ -1,0 +1,32 @@
+# Build-Artefakte
+build/
+images/
+*.iso
+*.img
+*.log
+local/
+cache/
+chroot/
+binary/
+auto/
+.build/
+
+# live-build generierte Configs (werden von build-distro.sh erzeugt)
+config/archives/
+config/package-lists/
+config/hooks/
+config/includes*/
+config/apt/
+config/binary
+config/bootstrap
+config/chroot
+config/common
+config/debian-installer
+config/packages*
+config/preseed
+config/rootfs
+config/source
+
+# temporär
+*.tmp
+.DS_Store
